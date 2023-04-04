@@ -1,12 +1,14 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { CoinFormat } from '@mysten/core';
+import { CoinFormat, useAddressToSuiNS } from '@mysten/core';
 import { CheckFill16 } from '@mysten/icons';
 
 import { CoinBalance } from './CoinBalance';
 import { Heading } from './Heading';
 import { TransactionAddress } from './TransactionAddress';
+
+// TODO: Move this out of shared components and into components/transactions
 
 type SponsorTransactionAddressProps = {
     sponsor: string;
@@ -32,11 +34,13 @@ type SenderTransactionAddressProps = {
 export function SenderTransactionAddress({
     sender,
 }: SenderTransactionAddressProps) {
+    const { data: suins } = useAddressToSuiNS(sender);
+
     return (
         <TransactionAddressSection title="Sender">
             <TransactionAddress
                 icon={<CheckFill16 className="text-steel" />}
-                address={sender}
+                address={suins || sender}
             />
         </TransactionAddressSection>
     );
