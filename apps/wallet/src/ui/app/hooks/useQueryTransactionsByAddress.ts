@@ -34,6 +34,7 @@ export function useQueryTransactionsByAddress(address: SuiAddress | null) {
                 ),
                 options: {
                     showInput: true,
+                    showBalanceChanges: true,
                     showEffects: true,
                     showEvents: true,
                 },
