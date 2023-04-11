@@ -17,8 +17,6 @@ import {
   SuiTransactionBlockResponse,
   TransactionDigest,
   SuiTransactionBlockResponseQuery,
-  RpcApiVersion,
-  parseVersionFromString,
   PaginatedEvents,
   FaucetResponse,
   Order,
@@ -62,6 +60,7 @@ import { CheckpointPage } from '../types/checkpoints';
 import { RPCError } from '../utils/errors';
 import { NetworkMetrics } from '../types/metrics';
 import { EpochInfo, EpochPage } from '../types/epochs';
+import { lt } from '@suchipi/femver';
 
 export interface PaginationArguments<Cursor> {
   /** Optional paging cursor */
@@ -118,7 +117,7 @@ export class JsonRpcProvider {
   public connection: Connection;
   protected client: JsonRpcClient;
   protected wsClient: WebsocketClient;
-  private rpcApiVersion: RpcApiVersion | undefined;
+  private rpcApiVersion: string | undefined;
   private cacheExpiry: number | undefined;
   /**
    * Establish a connection to a Sui RPC endpoint
@@ -147,7 +146,7 @@ export class JsonRpcProvider {
       );
   }
 
-  async getRpcApiVersion(): Promise<RpcApiVersion | undefined> {
+  async getRpcApiVersion(): Promise<string | undefined> {
     if (
       this.rpcApiVersion &&
       this.cacheExpiry &&
@@ -155,6 +154,7 @@ export class JsonRpcProvider {
     ) {
       return this.rpcApiVersion;
     }
+
     try {
       const resp = await this.client.requestWithType(
         'rpc.discover',
@@ -162,7 +162,7 @@ export class JsonRpcProvider {
         any(),
         this.options.skipDataValidation,
       );
-      this.rpcApiVersion = parseVersionFromString(resp.info.version);
+      this.rpcApiVersion = resp.info.version;
       this.cacheExpiry =
         // Date.now() is in milliseconds, but the timeout is in seconds
         Date.now() + (this.options.versionCacheTimeoutInSeconds ?? 0) * 1000;
@@ -186,12 +186,12 @@ export class JsonRpcProvider {
   /**
    * Get all Coin<`coin_type`> objects owned by an address.
    */
-  async getCoins(input: {
-    owner: SuiAddress;
-    coinType?: string | null;
-    cursor?: ObjectId | null;
-    limit?: number | null;
-  }): Promise<PaginatedCoins> {
+  async getCoins(
+    input: {
+      owner: SuiAddress;
+      coinType?: string | null;
+    } & PaginationArguments<PaginatedCoins['nextCursor']>,
+  ): Promise<PaginatedCoins> {
     if (!input.owner || !isValidSuiAddress(normalizeSuiAddress(input.owner))) {
       throw new Error('Invalid Sui address');
     }
@@ -778,20 +778,20 @@ export class JsonRpcProvider {
   /**
    * Returns historical checkpoints paginated
    */
-  async getCheckpoints(input: {
-    /**
-     * An optional paging cursor. If provided, the query will start from the next item after the specified cursor.
-     * Default to start from the first item if not specified.
-     */
-    cursor?: string;
-    /** Maximum item returned per page, default to 100 if not specified. */
-    limit?: string;
-    /** query result ordering, default to false (ascending order), oldest record first */
-    descendingOrder: boolean;
-  }): Promise<CheckpointPage> {
+  async getCheckpoints(
+    input: {
+      /** query result ordering, default to false (ascending order), oldest record first */
+      descendingOrder: boolean;
+    } & PaginationArguments<CheckpointPage['nextCursor']>,
+  ): Promise<CheckpointPage> {
+    const version = await this.getRpcApiVersion();
     const resp = await this.client.requestWithType(
       'sui_getCheckpoints',
-      [input.cursor, input.limit, input.descendingOrder],
+      [
+        input.cursor,
+        version && lt(version, '0.32.0') ? String(input?.limit) : input?.limit,
+        input.descendingOrder,
+      ],
       CheckpointPage,
       this.options.skipDataValidation,
     );
@@ -823,14 +823,19 @@ export class JsonRpcProvider {
   /**
    * Return the committee information for the asked epoch
    */
-  async getEpochs(input?: {
-    cursor?: string;
-    limit?: string;
-    descendingOrder?: boolean;
-  }): Promise<EpochPage> {
+  async getEpochs(
+    input?: {
+      descendingOrder?: boolean;
+    } & PaginationArguments<EpochPage['nextCursor']>,
+  ): Promise<EpochPage> {
+    const version = await this.getRpcApiVersion();
     return await this.client.requestWithType(
       'suix_getEpochs',
-      [input?.cursor, input?.limit, input?.descendingOrder],
+      [
+        input?.cursor,
+        version && lt(version, '0.32.0') ? String(input?.limit) : input?.limit,
+        input?.descendingOrder,
+      ],
       EpochPage,
       this.options.skipDataValidation,
     );
