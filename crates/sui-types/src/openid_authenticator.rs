@@ -4,7 +4,7 @@
 use crate::{
     base_types::SuiAddress,
     committee::EpochId,
-    crypto::{Signature, SuiSignature},
+    crypto::{Signature, SignatureScheme, SuiSignature},
     error::SuiError,
     signature::AuthenticatorTrait,
 };
@@ -15,26 +15,28 @@ use fastcrypto::{
     encoding::{Encoding, Hex},
     rsa::RSAPublicKey,
 };
-use fastcrypto_zkp::bn254::api::Bn254Fr;
+use fastcrypto_zkp::bn254::api::CanonicalSerialize;
 use fastcrypto_zkp::bn254::api::{
     serialize_proof_from_file, serialize_public_inputs_from_file, serialize_verifying_key_from_file,
 };
-use fastcrypto_zkp::bn254::poseidon::PoseidonWrapper;
+use fastcrypto_zkp::bn254::poseidon::calculate_merklized_hash;
 use num_bigint::BigInt;
 use num_traits::cast::ToPrimitive;
+use once_cell::sync::OnceCell;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use shared_crypto::intent::Intent;
 use shared_crypto::intent::{IntentMessage, IntentScope};
-use std::{hash::Hash, str::FromStr};
+use std::hash::Hasher;
+use std::{fs::File, hash::Hash, str::FromStr};
 
 #[cfg(test)]
 #[path = "unit_tests/openid_authenticator_tests.rs"]
 mod openid_authenticator_tests;
 
 /// An open id authenticator with all the necessary field.
-#[derive(Debug, Clone, PartialEq, Eq, JsonSchema, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct OpenIdAuthenticator {
     pub vk: SerializedVerifyingKey,
     pub proof_points: ProofPoints,
@@ -44,6 +46,25 @@ pub struct OpenIdAuthenticator {
     pub user_signature: Signature,
     pub bulletin_signature: Signature,
     pub bulletin: Vec<OAuthProviderContent>,
+    #[serde(skip)]
+    pub bytes: OnceCell<Vec<u8>>,
+}
+
+// todo fix this
+impl PartialEq for OpenIdAuthenticator {
+    fn eq(&self, other: &Self) -> bool {
+        self.vk == other.vk && self.proof_points == other.proof_points
+    }
+}
+
+/// Necessary trait for [struct SenderSignedData].
+impl Eq for OpenIdAuthenticator {}
+
+/// Necessary trait for [struct SenderSignedData].
+impl Hash for OpenIdAuthenticator {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
+    }
 }
 
 /// Prepared verifying key in serialized form.
@@ -74,19 +95,23 @@ impl SerializedVerifyingKey {
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema, Hash, Serialize, Deserialize)]
 pub struct PublicInputs {
     jwt_hash: Vec<u8>,
-    pub masked_content_hash: Vec<u8>,
+    pub masked_content_hash: String,
     nonce: String,
     eph_public_key: Vec<u8>,
     max_epoch: EpochId,
     pub payload_index: u64,
     last_block: u64,
-    #[serde(skip)]
-    path: String,
+    inputs_bytes: Vec<u8>,
 }
 
 impl PublicInputs {
     pub fn from_fp(path: &str) -> Self {
         let inputs = serialize_public_inputs_from_file(path);
+        let mut inputs_bytes = Vec::new();
+        for a in inputs.clone() {
+            a.serialize_compressed(&mut inputs_bytes).unwrap();
+        }
+
         let c1 = &BigInt::from_str(&inputs[5].to_string())
             .unwrap()
             .to_bytes_be()
@@ -127,10 +152,7 @@ impl PublicInputs {
 
         Self {
             jwt_hash,
-            masked_content_hash: BigInt::from_str(&inputs[4].to_string())
-                .unwrap()
-                .to_bytes_be()
-                .1,
+            masked_content_hash: inputs[4].to_string(),
             nonce: inputs[8].to_string(),
             eph_public_key,
             max_epoch: BigInt::from_str(&inputs[7].to_string())
@@ -145,16 +167,12 @@ impl PublicInputs {
                 .unwrap()
                 .to_u64()
                 .unwrap(),
-            path: path.to_string(),
+            inputs_bytes,
         }
     }
 
     pub fn get_jwt_hash(&self) -> &[u8] {
         &self.jwt_hash
-    }
-
-    pub fn to_bigint_array(&self) -> Vec<Bn254Fr> {
-        serialize_public_inputs_from_file(self.path.as_str())
     }
 }
 
@@ -187,14 +205,19 @@ impl MaskedContent {
     pub fn new(
         input: &[u8],
         payload_index: usize,
-        masked_content_hash: Vec<u8>,
+        masked_content_hash: String,
     ) -> Result<Self, SuiError> {
         if input.get(payload_index - 1) != Some(&b'.') {
             println!("incorrect masked content");
             return Err(SuiError::InvalidAuthenticator);
         }
-        let mut poseidon = PoseidonWrapper::new(2);
-        let digest = poseidon.hash(&[input]).digest;
+        println!("!!!input = {:?}", input);
+        println!("!!!input len = {:?}", input.len());
+
+        let digest = calculate_merklized_hash(input);
+        if digest != masked_content_hash {
+            return Err(SuiError::InvalidAuthenticator);
+        }
 
         println!("!!!digest = {:?}", digest);
         println!("!!!masked_content_hash = {:?}", masked_content_hash);
@@ -224,13 +247,13 @@ impl MaskedContent {
         println!("nonce: {:?}", nonce);
 
         let header_str = std::str::from_utf8(parts[0].get(0..payload_index - 1).unwrap()).unwrap();
+        println!("parts[0]: {:?}", parts[0]);
+        println!("header_str: {:?}", header_str);
+
         let decoded_header = Base64UrlUnpadded::decode_vec(header_str).unwrap();
+        println!("decoded_header: {:?}", decoded_header);
         let json_header: Value = serde_json::from_slice(&decoded_header).unwrap();
         let header: JWTHeader = serde_json::from_value(json_header).unwrap();
-
-        // if digest.to_vec() != masked_content_hash {
-        //     return Err(SuiError::InvalidAuthenticator);
-        // }
 
         Ok(Self {
             header,
@@ -266,6 +289,27 @@ struct JWTHeader {
     typ: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema, Hash, Serialize, Deserialize)]
+pub struct AuxInputs {
+    pub masked_content: Vec<u8>,
+    pub jwt_signature: String,
+    #[serde(skip)]
+    path: String,
+}
+
+impl AuxInputs {
+    pub fn from_fp(path: &str) -> Self {
+        let file = File::open(path).unwrap();
+        let reader = std::io::BufReader::new(file);
+        let inputs: AuxInputs = serde_json::from_reader(reader).unwrap();
+        Self {
+            masked_content: inputs.masked_content,
+            jwt_signature: inputs.jwt_signature,
+            path: path.to_string(),
+        }
+    }
+}
+
 impl AuthenticatorTrait for OpenIdAuthenticator {
     /// Verify a proof for an intent message with its sender.
     fn verify_secure_generic<T>(
@@ -290,16 +334,16 @@ impl AuthenticatorTrait for OpenIdAuthenticator {
             return Err(SuiError::InvalidAuthenticator);
         }
 
-        println!("Verified masked content");
         if self.public_inputs.max_epoch < epoch.unwrap_or(0) {
             return Err(SuiError::InvalidAuthenticator);
         }
+        println!("Verified masked content self.public_inputs.nonce: {:?} self.masked_content.nonce: {:?}", self.public_inputs.nonce, self.masked_content.nonce);
 
         if self.public_inputs.nonce != self.masked_content.nonce {
             return Err(SuiError::InvalidAuthenticator);
         }
 
-        println!("Verified epoch");
+        println!("Verified nonce");
         // Verify the foundation signature indeed commits to the OAuth provider content,
         // that is, a list of valid pubkeys available at https://www.googleapis.com/oauth2/v3/certs.
         if self
@@ -330,7 +374,8 @@ impl AuthenticatorTrait for OpenIdAuthenticator {
                 let pk = RSAPublicKey::from_raw_components(
                     &Base64UrlUnpadded::decode_vec(&info.n).unwrap(),
                     &Base64UrlUnpadded::decode_vec(&info.e).unwrap(),
-                ).unwrap();
+                )
+                .unwrap();
                 if pk
                     .verify_prehash(self.public_inputs.get_jwt_hash(), &sig)
                     .is_ok()
@@ -355,12 +400,14 @@ impl AuthenticatorTrait for OpenIdAuthenticator {
             });
         }
 
-        match fastcrypto_zkp::bn254::api::verify_groth16(
+        println!("self.public_inputs: {:?}", self.public_inputs);
+
+        match fastcrypto_zkp::bn254::api::verify_groth16_in_bytes(
             &self.vk.vk_gamma_abc_g1,
             &self.vk.alpha_g1_beta_g2,
             &self.vk.gamma_g2_neg_pc,
             &self.vk.delta_g2_neg_pc,
-            &self.public_inputs.to_bigint_array(),
+            &self.public_inputs.inputs_bytes,
             &self.proof_points.bytes,
         ) {
             Ok(true) => Ok(()),
@@ -373,6 +420,14 @@ impl AuthenticatorTrait for OpenIdAuthenticator {
 
 impl AsRef<[u8]> for OpenIdAuthenticator {
     fn as_ref(&self) -> &[u8] {
-        todo!()
+        self.bytes
+            .get_or_try_init::<_, eyre::Report>(|| {
+                let as_bytes = bcs::to_bytes(self).expect("BCS serialization should not fail");
+                let mut bytes = Vec::with_capacity(1 + as_bytes.len());
+                bytes.push(SignatureScheme::OpenIdAuthenticator.flag());
+                bytes.extend_from_slice(as_bytes.as_slice());
+                Ok(bytes)
+            })
+            .expect("OnceCell invariant violated")
     }
 }

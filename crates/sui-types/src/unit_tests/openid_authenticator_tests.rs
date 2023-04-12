@@ -1,6 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use super::AuxInputs;
+use crate::openid_authenticator::JWTHeader;
 use crate::{
     base_types::SuiAddress,
     crypto::{get_key_pair_from_rng, DefaultHash, Signature, SignatureScheme, SuiKeyPair},
@@ -11,11 +13,15 @@ use crate::{
     signature::{AuthenticatorTrait, GenericSignature},
     utils::make_transaction,
 };
-use fastcrypto::hash::HashFunction;
 use fastcrypto::rsa::{Base64UrlUnpadded, Encoding as OtherEncoding};
+use fastcrypto::{
+    encoding::{Base64, Encoding},
+    hash::HashFunction,
+};
+use once_cell::sync::OnceCell;
 use rand::{rngs::StdRng, SeedableRng};
+use serde_json::Value;
 use shared_crypto::intent::{Intent, IntentMessage, IntentScope};
-
 pub fn keys() -> Vec<SuiKeyPair> {
     let mut seed = StdRng::from_seed([0; 32]);
     let kp1: SuiKeyPair = SuiKeyPair::Ed25519(get_key_pair_from_rng(&mut seed).1);
@@ -33,6 +39,7 @@ fn openid_authenticator_scenarios() {
     let vk = SerializedVerifyingKey::from_fp("./src/unit_tests/google.vkey");
     let public_inputs = PublicInputs::from_fp("./src/unit_tests/public.json");
     let proof_points = ProofPoints::from_fp("./src/unit_tests/google.proof");
+    let aux_inputs = AuxInputs::from_fp("./src/unit_tests/aux.json");
 
     let mut hasher = DefaultHash::default();
     hasher.update([SignatureScheme::OpenIdAuthenticator.flag()]);
@@ -62,6 +69,7 @@ fn openid_authenticator_scenarios() {
         ),
         foundation_key,
     );
+    println!("bulletin sig: {:?}", Base64::encode(bulletin_sig.as_ref()));
 
     // Sign the user transaction with the user's ephemeral key.
     let tx = make_transaction(user_address, user_key, Intent::sui_transaction());
@@ -74,11 +82,17 @@ fn openid_authenticator_scenarios() {
         vk,
         public_inputs: public_inputs.clone(),
         proof_points,
-        masked_content: MaskedContent::new(b"eyJhbGciOiJSUzI1NiIsImtpZCI6ImFjZGEzNjBmYjM2Y2QxNWZmODNhZjgzZTE3M2Y0N2ZmYzM2ZDExMWMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20i============================================================================================================LCJhdWQiOiI1NzU1MTkyMDQyMzctbXNvcDllcDQ1dTJ1bzk4aGFwcW1uZ3Y4ZDg0cWRjOGsuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20i========================================LCJub25jZSI6IjE2NjM3OTE4ODEzOTA4MDYwMjYxODcwNTI4OTAzOTk0MDM4NzIxNjY5Nzk5NjEzODAzNjAxNjE2Njc4MTU1NTEyMTgxMjczMjg5NDc3Iiwi==============================================================================================================\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x13\xe8", public_inputs.payload_index as usize, public_inputs.masked_content_hash).unwrap(),
-        jwt_signature: Base64UrlUnpadded::decode_vec("AJeq5jbqmPxu8_YoT0jKk4CVUsLajuA4tCaPKTq-iuaT7zkKRU1VOS3ETFP1e3fD1gLM3lYIWBxCVHYYvO9YaVlD542Hszbiire8VgfzB0w3xoUDTFYD8CURDYeGxWCFOUtMG72peVDWNiZh14beHIj42upBRmK7gxp0R569N2ifnimq8jO0y1oBcMXytKkFkHk0BGSHqcLVUtWt9dn9-zkfmuY0SU8vzwy113AErBDEhZmXy6PhfXmDrGZno0ci6GYZxWpRouuPXFg3zojMvdkJIlJfnCZcbcp1eS_0d33gxb951y7IA4xzeb9y1LQNRvj3_QuAv9us6Sal9J3YjQ").unwrap(),
+        masked_content: MaskedContent::new(
+            &aux_inputs.masked_content,
+            public_inputs.payload_index as usize,
+            public_inputs.masked_content_hash,
+        )
+        .unwrap(),
+        jwt_signature: Base64UrlUnpadded::decode_vec(&aux_inputs.jwt_signature).unwrap(),
         user_signature: s.clone(),
         bulletin_signature: bulletin_sig,
-        bulletin: example_bulletin
+        bulletin: example_bulletin,
+        bytes: OnceCell::new(),
     };
 
     assert!(authenticator
@@ -94,7 +108,16 @@ fn openid_authenticator_scenarios() {
 }
 
 #[test]
-fn test_authenticator_failure() {}
+fn test_authenticator_failure() {
+    let aux = AuxInputs::from_fp("./src/unit_tests/aux.json");
+    println!("aux: {:?}", aux);
+    let res = Base64UrlUnpadded::decode_vec("eyJhbGciOiJSUzI1NiIsImtpZCI6ImFjZGEzNjBmYjM2Y2QxNWZmODNhZjgzZTE3M2Y0N2ZmYzM2ZDExMWMiLCJ0eXAiOiJKV1QifQ");
+    println!("res = {:?}", res);
+    let decoded_header = res.unwrap();
+    let json_header: Value = serde_json::from_slice(&decoded_header).unwrap();
+    let header: JWTHeader = serde_json::from_value(json_header).unwrap();
+    println!("header = {:?}", header);
+}
 
 #[test]
 fn test_serde_roundtrip() {}
