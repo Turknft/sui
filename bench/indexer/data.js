@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1681419190145,
+  "lastUpdate": 1681419268479,
   "repoUrl": "https://github.com/MystenLabs/sui",
   "entries": {
     "Benchmark": [
@@ -35,6 +35,42 @@ window.BENCHMARK_DATA = {
             "name": "get_checkpoint",
             "value": 687673,
             "range": "± 63145",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "81660174+mwtian@users.noreply.github.com",
+            "name": "mwtian",
+            "username": "mwtian"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf757cc486cb5ff33e3427b0e1b5de1471263540",
+          "message": "[TransactionManager] refactor and fix memory usage issues (#10829)\n\n## Description \r\n\r\n1. Fix a leak where lock_waiters map inserts an entry with empty\r\nLockQueue, that may not get removed.\r\n2. Resize HashMaps in TM as load changes.\r\n3. Only notify TM once after a transaction commits, with both tx digest\r\nand output keys.\r\n4. Extract common logic to update lock queue and ready transactions\r\nafter a transaction and its output objects commit.\r\n\r\n## Test Plan \r\n\r\nunit tests\r\n\r\n---\r\nIf your changes are not user-facing and not a breaking change, you can\r\nskip the following section. Otherwise, please indicate what changed, and\r\nthen add to the Release Notes section as highlighted during the release\r\nprocess.\r\n\r\n### Type of Change (Check all that apply)\r\n\r\n- [ ] user-visible impact\r\n- [ ] breaking change for a client SDKs\r\n- [ ] breaking change for FNs (FN binary must upgrade)\r\n- [ ] breaking change for validators or node operators (must upgrade\r\nbinaries)\r\n- [ ] breaking change for on-chain data layout\r\n- [ ] necessitate either a data wipe or data migration\r\n\r\n### Release notes",
+          "timestamp": "2023-04-13T20:43:03Z",
+          "tree_id": "01faabd751ba32d7f312aea9cdb7aab09b97f133",
+          "url": "https://github.com/MystenLabs/sui/commit/bf757cc486cb5ff33e3427b0e1b5de1471263540"
+        },
+        "date": 1681419266126,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "persist_checkpoint",
+            "value": 180936974,
+            "range": "± 12790856",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get_checkpoint",
+            "value": 541838,
+            "range": "± 22867",
             "unit": "ns/iter"
           }
         ]
