@@ -1,5 +1,11 @@
 # @mysten/sui.js
 
+## 0.32.2
+
+### Patch Changes
+
+- 59ae0e7d6: Removed `skipDataValidation` option, this is now not configurable and is the default behavior.
+
 ## 0.32.1
 
 ### Patch Changes
